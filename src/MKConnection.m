@@ -68,6 +68,7 @@
 - (uint64_t) _currentTimeStamp;
 
 - (void) _setupSsl;
+- (void) _setupVoIP;
 - (void) _pingTimerFired:(NSTimer *)timer;
 - (void) _pingResponseFromServer:(MPPing *)pingMessage;
 - (void) _versionMessageReceived:(MPVersion *)msg;
@@ -160,6 +161,7 @@ static void MKConnectionUDPCallback(CFSocketRef sock, CFSocketCallBackType type,
 		[_outputStream scheduleInRunLoop:runLoop forMode:NSDefaultRunLoopMode];
 
 		[self _setupSsl];
+		[self _setupVoIP];
 
 		[_inputStream open];
 		[_outputStream open];
@@ -445,6 +447,11 @@ static void MKConnectionUDPCallback(CFSocketRef sock, CFSocketCallBackType type,
 	}
 }
 
+- (void) _setupVoIP {
+	CFWriteStreamSetProperty((CFWriteStreamRef) _outputStream, kCFStreamNetworkServiceType, kCFStreamNetworkServiceTypeVoIP);
+	CFReadStreamSetProperty((CFReadStreamRef) _inputStream, kCFStreamNetworkServiceType, kCFStreamNetworkServiceTypeVoIP);
+}
+
 // Initialize the UDP connection-part of an MKConnection.
 //
 // Must be called after a TCP connection is already in place
@@ -551,6 +558,17 @@ static void MKConnectionUDPCallback(CFSocketRef sock, CFSocketCallBackType type,
 // Return the current TCP mode status
 - (BOOL) forceTCP {
 	return _forceTCP;
+}
+
+// Send a dummy UDPTunnel message so the server knows that we're running
+// in TCP mode.
+- (void) forceConnectionIntoTCPState {
+	NSLog(@"forceConnectionIntoTCPState: Sending dummy UDPTunnel message.");
+	NSMutableData *msg = [[NSMutableData alloc] initWithLength:3];
+	char *buf = [msg mutableBytes];
+	memset(buf, 0, 3);
+	[self sendMessageWithType:UDPTunnelMessage data:msg];
+	[msg release];
 }
 
 // Send a UDP message.  This method encrypts the message using the connection's
@@ -881,6 +899,7 @@ static void MKConnectionUDPCallback(CFSocketRef sock, CFSocketCallBackType type,
 // This is the entry point for UDP packets after they've been decrypted,
 // and also for UDP packets that are tunneled through the TCP stream.
 - (void) _udpMessageReceived:(NSData *)data {
+	NSLog(@"_messageRecieved (TCP)"); // TODO: Remove as this will cause excessive logging
 	unsigned char *buf = (unsigned char *)[data bytes];
 	MKUDPMessageType messageType = ((buf[0] >> 5) & 0x7);
 	unsigned int messageFlags = buf[0] & 0x1f;
@@ -897,6 +916,12 @@ static void MKConnectionUDPCallback(CFSocketRef sock, CFSocketCallBackType type,
 			unsigned char *bytes = [voicePacketData mutableBytes];
 			bytes[0] = (unsigned char)messageFlags;
 			memcpy(bytes+1, [pds dataPtr], [pds left]);
+			// Start audio if it is not started
+			// fixme: we should put this somewhere else
+			if (![[MKAudio sharedAudio] isRunning]) {
+				NSLog(@"_udpMessageReceived: MKAudio not running. Starting it.");
+				[[MKAudio sharedAudio] start];
+			}
 			[[MKAudio sharedAudio] addFrameToBufferWithSession:session data:voicePacketData sequence:seq type:messageType];
 			[voicePacketData release];
 			break;
@@ -919,6 +944,7 @@ static void MKConnectionUDPCallback(CFSocketRef sock, CFSocketCallBackType type,
 
 
 - (void) _messageRecieved:(NSData *)data {
+	NSLog(@"_messageRecieved (TCP)"); // TODO: Remove as this will cause excessive logging
 	dispatch_queue_t main_queue = dispatch_get_main_queue();
 
 	/* No message handler has been assigned. Don't propagate. */
@@ -936,12 +962,7 @@ static void MKConnectionUDPCallback(CFSocketRef sock, CFSocketCallBackType type,
 			if (_forceTCP) {
 				// Send a dummy UDPTunnel message so the server knows that we're running
 				// in TCP mode.
-				NSLog(@"MKConnection: Sending dummy UDPTunnel message.");
-				NSMutableData *msg = [[NSMutableData alloc] initWithLength:3];
-				char *buf = [msg mutableBytes];
-				memset(buf, 0, 3);
-				[self sendMessageWithType:UDPTunnelMessage data:msg];
-				[msg release];
+				[self forceConnectionIntoTCPState];
 			}
 
 			MPServerSync *serverSync = [MPServerSync parseFromData:data];

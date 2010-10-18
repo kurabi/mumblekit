@@ -189,6 +189,7 @@ typedef enum {
 
 - (void) setForceTCP:(BOOL)flag;
 - (BOOL) forceTCP;
+- (void) forceConnectionIntoTCPState;
 
 - (void) sendMessageWithType:(MKMessageType)messageType data:(NSData *)data;
 - (void) sendVoiceData:(NSData *)data;
